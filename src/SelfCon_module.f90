@@ -883,7 +883,7 @@ contains
                               flag_continue_on_SC_fail,        &
                               flag_SCconverged,                &
                               flag_fix_spin_population, nspin, &
-                              spin_factor
+                              spin_factor, ne_spin_in_cell
     use memory_module,  only: reg_alloc_mem, reg_dealloc_mem, type_dbl
     use maxima_module,  only: maxngrid
     use store_matrix,   only: dump_pos_and_matrices, unit_SCF_save
@@ -919,7 +919,7 @@ contains
 
     type(cq_timer)    :: backtrace_timer
     integer           :: backtrace_level
-
+    real(double) :: ne_spin_sum(nspin), fac
 !****lat<$
     if (       present(level) ) backtrace_level = level+1
     if ( .not. present(level) ) backtrace_level = -10
@@ -1117,6 +1117,18 @@ contains
           end if
        end if
        ! check if they have reached tolerance
+    if(.not.flag_fix_spin_population .and. nspin.eq.2) then
+      do spin = 1, nspin
+       ne_spin_sum(spin) = grid_point_volume * rsum(n_my_grid_points, rho(:,spin), 1)
+       call gsum(ne_spin_sum(spin))
+      end do
+
+      ne_spin_in_cell(:) = ne_spin_sum(:)
+      fac = ne_in_cell/(ne_spin_in_cell(1)+ne_spin_in_cell(2))
+      ne_spin_in_cell(:) = ne_spin_in_cell(:) * fac
+      
+    endif
+
        if (R0 < self_tol .AND. iter >= minitersSC) then ! Passed minimum number of iterations
           if (inode == ionode) write (io_lun,1) iter
           done = .true.
@@ -1402,6 +1414,8 @@ contains
     ! local variables
     integer :: spin, stat
     real(double), dimension(:,:), allocatable :: rho_out, resid
+    real(double), dimension(:),   allocatable :: resid_spin
+    real(double) :: fac
     type(cq_timer) :: backtrace_timer
     integer        :: backtrace_level
 
@@ -1416,6 +1430,14 @@ contains
     if (stat /= 0) &
          call cq_abort("update_pulay_history: Error alloc mem: ", maxngrid, nspin)
     call reg_alloc_mem(area_SC, 2*maxngrid*nspin, type_dbl)
+
+   if(.not.flag_fix_spin_population .and. nspin ==2) then
+    allocate(resid_spin(maxngrid), STAT=stat)
+    if (stat /= 0) &
+         call cq_abort("update_pulay_history: Error alloc mem 2: ", maxngrid)
+    call reg_alloc_mem(area_SC, maxngrid, type_dbl)
+    resid_spin(:) = zero
+   endif
 
     ! store rho_in to history
     do spin = 1, nspin
@@ -1438,6 +1460,9 @@ contains
             resid(1:n_my_grid_points,spin)
     end do
 
+   if(.not.flag_fix_spin_population .and. nspin ==2) &
+    resid_spin(:) = resid(:,1)-resid(:,2)
+
     ! calculate the Kerker preconditioned or wave-dependent metric
     ! covarient residuals if requires to
     do spin = 1, nspin
@@ -1449,6 +1474,18 @@ contains
           else
              call kerker(resid(:,spin), maxngrid, q0)
           end if
+
+       if(.not.flag_fix_spin_population .and. nspin ==2) then
+         if(spin == 1) then 
+              fac = half 
+         elseif(spin == 2) then
+              fac =-half 
+         else
+           call cq_abort("update_pulay_history: nspin > 2?",spin)
+         endif
+         resid(:,spin)= resid(:,spin) + fac*resid_spin(:)
+       endif
+
           ! replace the k_resid_pul history at iPulay to new value
           k_resid_pul(1:n_my_grid_points,iPulay,spin) = &
                resid(1:n_my_grid_points,spin)
