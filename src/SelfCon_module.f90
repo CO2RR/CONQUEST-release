@@ -1497,6 +1497,13 @@ contains
        end if ! flag_Kerker
     end do ! spin
 
+    if(.not.flag_fix_spin_population .and. nspin ==2) then
+     deallocate(resid_spin, STAT=stat)
+     if (stat /= 0) &
+     call cq_abort("update_pulay_history: Error dealloc resid_spin: stat = ", stat)
+     call reg_dealloc_mem(area_SC, maxngrid, type_dbl)
+    endif
+
     deallocate(rho_out, resid, STAT=stat)
     if (stat /= 0) &
          call cq_abort("update_pulay_history: Error dealloc mem")
