@@ -919,6 +919,7 @@ contains
 
     type(cq_timer)    :: backtrace_timer
     integer           :: backtrace_level
+
     real(double) :: ne_spin_sum(nspin), fac
 !****lat<$
     if (       present(level) ) backtrace_level = level+1
@@ -1117,15 +1118,15 @@ contains
           end if
        end if
        ! check if they have reached tolerance
-    if(.not.flag_fix_spin_population .and. nspin.eq.2) then
+    if(.not.flag_fix_spin_population .and. nspin > 1) then
+       ne_spin_sum(:) = zero
       do spin = 1, nspin
        ne_spin_sum(spin) = grid_point_volume * rsum(n_my_grid_points, rho(:,spin), 1)
        call gsum(ne_spin_sum(spin))
       end do
-
-      ne_spin_in_cell(:) = ne_spin_sum(:)
-      fac = ne_in_cell/(ne_spin_in_cell(1)+ne_spin_in_cell(2))
-      ne_spin_in_cell(:) = ne_spin_in_cell(:) * fac
+       ne_spin_in_cell(:) = ne_spin_sum(:)
+       fac = ne_in_cell/(ne_spin_in_cell(1)+ne_spin_in_cell(2))
+       ne_spin_in_cell(:) = ne_spin_in_cell(:) * fac
       
     endif
 
@@ -1391,7 +1392,7 @@ contains
                                   cov_resid_pul, level)
     use datatypes
     use GenBlas
-    use dimens,         only: n_my_grid_points, grid_point_volume
+    use dimens,         only: n_my_grid_points, grid_point_volume, volume
     use GenComms,       only: gsum, cq_abort
     use hartree_module, only: kerker, kerker_and_wdmetric, wdmetric
     use global_module,  only: nspin, flag_fix_spin_population
@@ -1414,8 +1415,9 @@ contains
     ! local variables
     integer :: spin, stat
     real(double), dimension(:,:), allocatable :: rho_out, resid
-    real(double), dimension(:),   allocatable :: resid_spin
     real(double) :: fac
+    logical :: flag_Kerker_VarSpin
+    real(double) :: ne_spin_sum(2)
     type(cq_timer) :: backtrace_timer
     integer        :: backtrace_level
 
@@ -1431,13 +1433,7 @@ contains
          call cq_abort("update_pulay_history: Error alloc mem: ", maxngrid, nspin)
     call reg_alloc_mem(area_SC, 2*maxngrid*nspin, type_dbl)
 
-   if(.not.flag_fix_spin_population .and. nspin ==2) then
-    allocate(resid_spin(maxngrid), STAT=stat)
-    if (stat /= 0) &
-         call cq_abort("update_pulay_history: Error alloc mem 2: ", maxngrid)
-    call reg_alloc_mem(area_SC, maxngrid, type_dbl)
-    resid_spin(:) = zero
-   endif
+   flag_Kerker_VarSpin = flag_kerker .and. .not.flag_fix_spin_population .and. nspin == 2
 
     ! store rho_in to history
     do spin = 1, nspin
@@ -1460,8 +1456,15 @@ contains
             resid(1:n_my_grid_points,spin)
     end do
 
-   if(.not.flag_fix_spin_population .and. nspin ==2) &
-    resid_spin(:) = resid(:,1)-resid(:,2)
+   if(flag_Kerker_VarSpin) then 
+       ne_spin_sum(:) = zero
+      do spin = 1, nspin
+       ne_spin_sum(spin) = grid_point_volume * rsum(n_my_grid_points, resid(:,spin), 1)
+       call gsum(ne_spin_sum(spin))
+      end do
+      !write(io_lun,*) "3: NE_UP ,NE_DOWN, SUM = ",ne_spin_sum(1:2), ne_spin_sum(1)+ne_spin_sum(2)
+       ne_spin_sum(2)= -ne_spin_sum(1)
+   endif
 
     ! calculate the Kerker preconditioned or wave-dependent metric
     ! covarient residuals if requires to
@@ -1475,15 +1478,14 @@ contains
              call kerker(resid(:,spin), maxngrid, q0)
           end if
 
-       if(.not.flag_fix_spin_population .and. nspin ==2) then
-         if(spin == 1) then 
-              fac = half 
-         elseif(spin == 2) then
-              fac =-half 
-         else
-           call cq_abort("update_pulay_history: nspin > 2?",spin)
-         endif
-         resid(:,spin)= resid(:,spin) + fac*resid_spin(:)
+       if(flag_Kerker_VarSpin) then
+          ne_spin_sum(spin) = ne_spin_sum(spin)/volume
+          resid(:,spin)=resid(:,spin) + ne_spin_sum(spin)
+
+         ! ne_spin_sum(spin) = grid_point_volume * rsum(n_my_grid_points, resid(:,spin), 1)
+         ! call gsum(ne_spin_sum(spin))
+         ! write(io_lun,*) "4: NE_UP or NE_DOWN, SUM = ",ne_spin_sum(spin)
+
        endif
 
           ! replace the k_resid_pul history at iPulay to new value
@@ -1496,13 +1498,6 @@ contains
           end if
        end if ! flag_Kerker
     end do ! spin
-
-    if(.not.flag_fix_spin_population .and. nspin ==2) then
-     deallocate(resid_spin, STAT=stat)
-     if (stat /= 0) &
-     call cq_abort("update_pulay_history: Error dealloc resid_spin: stat = ", stat)
-     call reg_dealloc_mem(area_SC, maxngrid, type_dbl)
-    endif
 
     deallocate(rho_out, resid, STAT=stat)
     if (stat /= 0) &
